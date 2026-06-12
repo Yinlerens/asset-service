@@ -1,0 +1,17 @@
+.git/
+.github/
+argocd/
+k8s/
+
+asset-service
+asset-service.exe
+*.test
+coverage.out
+
+.env
+.env.*
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

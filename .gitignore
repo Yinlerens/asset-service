@@ -1,0 +1,4 @@
+asset-service
+asset-service.exe
+*.test
+coverage.out
