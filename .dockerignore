@@ -3,8 +3,8 @@
 argocd/
 k8s/
 
-asset-service
-asset-service.exe
+/asset-service
+/asset-service.exe
 *.test
 coverage.out
 

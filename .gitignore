@@ -1,4 +1,4 @@
-asset-service
-asset-service.exe
+/asset-service
+/asset-service.exe
 *.test
 coverage.out
