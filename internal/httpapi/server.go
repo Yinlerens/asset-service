@@ -32,10 +32,10 @@ type Store interface {
 }
 
 type Options struct {
-	InternalToken       string
-	MaxLedgerLimit      int
-	Grants              map[string]int64
-	AllowDirectEntries  bool
+	InternalToken      string
+	MaxLedgerLimit     int
+	Grants             map[string]int64
+	AllowDirectEntries bool
 }
 
 type Server struct {
