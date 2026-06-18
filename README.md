@@ -27,6 +27,8 @@ INTERNAL_TOKEN=...
 ```text
 PORT=8080
 MAX_LEDGER_LIMIT=100
+ASSET_GRANTS=starter_supply=16000
+ALLOW_DIRECT_ENTRIES=false
 ```
 
 ## 数据库迁移
@@ -83,6 +85,20 @@ GET /v1/me/ledger?limit=50&cursor=<next_cursor>
 X-Internal-Token: <网关内部调用密钥>
 X-User-Id: <网关校验后的用户 UUID>
 ```
+
+领取服务端配置的资产补给：
+
+```http
+POST /v1/me/grants/starter_supply/claim
+X-Internal-Token: <网关内部调用密钥>
+X-User-Id: <网关校验后的用户 UUID>
+```
+
+`ASSET_GRANTS` 使用逗号分隔的 `grant_id=delta_minor` 列表。服务会用
+`grant:<grant_id>` 作为幂等键，因此同一个用户同一个补给只能领取一次。
+
+`POST /v1/me/entries` 是底层账务流水写入口，默认不注册路由。只有显式设置
+`ALLOW_DIRECT_ENTRIES=true` 时才会开放，普通前端不要使用它。
 
 ## 本地开发
 

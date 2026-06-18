@@ -38,8 +38,10 @@ func run() error {
 	defer dataStore.Close()
 
 	api := httpapi.New(dataStore, httpapi.Options{
-		InternalToken:  cfg.InternalToken,
-		MaxLedgerLimit: cfg.MaxLedgerLimit,
+		InternalToken:      cfg.InternalToken,
+		MaxLedgerLimit:     cfg.MaxLedgerLimit,
+		Grants:             cfg.Grants,
+		AllowDirectEntries: cfg.AllowDirectEntries,
 	})
 
 	server := &http.Server{

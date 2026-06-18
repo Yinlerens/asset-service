@@ -41,6 +41,8 @@ spec:
               value: "8080"
             - name: MAX_LEDGER_LIMIT
               value: "100"
+            - name: ASSET_GRANTS
+              value: starter_supply=16000
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

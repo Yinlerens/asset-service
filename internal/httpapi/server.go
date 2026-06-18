@@ -32,14 +32,18 @@ type Store interface {
 }
 
 type Options struct {
-	InternalToken  string
-	MaxLedgerLimit int
+	InternalToken       string
+	MaxLedgerLimit      int
+	Grants              map[string]int64
+	AllowDirectEntries  bool
 }
 
 type Server struct {
-	store          Store
-	internalToken  string
-	maxLedgerLimit int
+	store              Store
+	internalToken      string
+	maxLedgerLimit     int
+	grants             map[string]int64
+	allowDirectEntries bool
 }
 
 func New(store Store, opts Options) *Server {
@@ -49,9 +53,11 @@ func New(store Store, opts Options) *Server {
 	}
 
 	return &Server{
-		store:          store,
-		internalToken:  opts.InternalToken,
-		maxLedgerLimit: maxLedgerLimit,
+		store:              store,
+		internalToken:      opts.InternalToken,
+		maxLedgerLimit:     maxLedgerLimit,
+		grants:             normalizeGrants(opts.Grants),
+		allowDirectEntries: opts.AllowDirectEntries,
 	}
 }
 
@@ -61,7 +67,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.Handle("GET /v1/me/account", s.withGatewayAuth(http.HandlerFunc(s.handleGetAccount)))
 	mux.Handle("GET /v1/me/ledger", s.withGatewayAuth(http.HandlerFunc(s.handleListLedger)))
-	mux.Handle("POST /v1/me/entries", s.withGatewayAuth(http.HandlerFunc(s.handleCreateEntry)))
+	mux.Handle("POST /v1/me/grants/{grant_id}/claim", s.withGatewayAuth(http.HandlerFunc(s.handleClaimGrant)))
+	if s.allowDirectEntries {
+		mux.Handle("POST /v1/me/entries", s.withGatewayAuth(http.HandlerFunc(s.handleCreateEntry)))
+	}
 	return mux
 }
 
@@ -194,6 +203,55 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleClaimGrant(w http.ResponseWriter, r *http.Request) {
+	userID := mustUserID(r.Context())
+	grantID := strings.TrimSpace(r.PathValue("grant_id"))
+	deltaMinor, ok := s.grants[grantID]
+	if !ok {
+		writeError(w, http.StatusNotFound, "grant_not_found", "grant was not found")
+		return
+	}
+
+	metadata, err := json.Marshal(map[string]string{
+		"grant_id": grantID,
+		"source":   "asset_grant",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "grant_unavailable", "grant could not be claimed")
+		return
+	}
+
+	entry, account, reused, err := s.store.CreateEntry(r.Context(), userID, store.CreateEntryInput{
+		IdempotencyKey: "grant:" + grantID,
+		DeltaMinor:     deltaMinor,
+		Reason:         "asset_grant:" + grantID,
+		Metadata:       metadata,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "grant_conflict", "grant claim conflicts with an existing ledger entry")
+		case errors.Is(err, store.ErrBalanceOverflow):
+			writeError(w, http.StatusConflict, "balance_overflow", "balance is outside the supported range")
+		default:
+			writeError(w, http.StatusInternalServerError, "grant_unavailable", "grant could not be claimed")
+		}
+		return
+	}
+
+	statusCode := http.StatusCreated
+	if reused {
+		statusCode = http.StatusOK
+	}
+
+	writeJSON(w, statusCode, claimGrantResponse{
+		GrantID:        grantID,
+		Account:        accountResponseFromStore(account),
+		Entry:          ledgerEntryResponseFromStore(entry),
+		AlreadyClaimed: reused,
+	})
+}
+
 func (s *Server) withGatewayAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !constantTimeEqual(r.Header.Get(internalTokenHeader), s.internalToken) {
@@ -214,6 +272,18 @@ func (s *Server) withGatewayAuth(next http.Handler) http.Handler {
 
 func constantTimeEqual(left string, right string) bool {
 	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
+}
+
+func normalizeGrants(grants map[string]int64) map[string]int64 {
+	normalized := make(map[string]int64, len(grants))
+	for id, delta := range grants {
+		id = strings.TrimSpace(id)
+		if id == "" || delta <= 0 {
+			continue
+		}
+		normalized[id] = delta
+	}
+	return normalized
 }
 
 type userIDContextKey struct{}

@@ -52,6 +52,13 @@ type createEntryResponse struct {
 	IdempotencyReused bool                `json:"idempotency_reused"`
 }
 
+type claimGrantResponse struct {
+	GrantID        string              `json:"grant_id"`
+	Account        accountResponse     `json:"account"`
+	Entry          ledgerEntryResponse `json:"entry"`
+	AlreadyClaimed bool                `json:"already_claimed"`
+}
+
 func accountResponseFromStore(account store.Account) accountResponse {
 	return accountResponse{
 		UserID:       account.UserID.String(),

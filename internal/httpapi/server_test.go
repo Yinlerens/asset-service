@@ -32,6 +32,13 @@ func (f *fakeStore) ListLedgerEntries(ctx context.Context, userID uuid.UUID, cur
 }
 
 func (f *fakeStore) CreateEntry(ctx context.Context, userID uuid.UUID, input store.CreateEntryInput) (store.LedgerEntry, store.Account, bool, error) {
+	for _, entry := range f.entries {
+		if entry.UserID == userID && entry.IdempotencyKey == input.IdempotencyKey {
+			f.account.UserID = userID
+			return entry, f.account, true, nil
+		}
+	}
+
 	entry := store.LedgerEntry{
 		ID:                 uuid.New(),
 		UserID:             userID,
@@ -45,6 +52,7 @@ func (f *fakeStore) CreateEntry(ctx context.Context, userID uuid.UUID, input sto
 	}
 	f.account.UserID = userID
 	f.account.BalanceMinor = entry.BalanceAfterMinor
+	f.entries = append(f.entries, entry)
 	return entry, f.account, false, nil
 }
 
@@ -96,7 +104,7 @@ func TestGetAccountEnsuresAccountForGatewayUser(t *testing.T) {
 
 func TestCreateEntryRequiresIdempotencyKey(t *testing.T) {
 	userID := uuid.New()
-	api := New(&fakeStore{}, Options{InternalToken: "secret"})
+	api := New(&fakeStore{}, Options{InternalToken: "secret", AllowDirectEntries: true})
 
 	request := httptest.NewRequest(http.MethodPost, "/v1/me/entries", strings.NewReader(`{"delta_minor":100}`))
 	request.Header.Set(internalTokenHeader, "secret")
@@ -112,7 +120,7 @@ func TestCreateEntryRequiresIdempotencyKey(t *testing.T) {
 
 func TestCreateEntryRejectsNonObjectMetadata(t *testing.T) {
 	userID := uuid.New()
-	api := New(&fakeStore{}, Options{InternalToken: "secret"})
+	api := New(&fakeStore{}, Options{InternalToken: "secret", AllowDirectEntries: true})
 
 	request := httptest.NewRequest(http.MethodPost, "/v1/me/entries", strings.NewReader(`{"delta_minor":100,"metadata":[]}`))
 	request.Header.Set(internalTokenHeader, "secret")
@@ -124,6 +132,89 @@ func TestCreateEntryRejectsNonObjectMetadata(t *testing.T) {
 
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", response.Code)
+	}
+}
+
+func TestCreateEntryIsDisabledByDefault(t *testing.T) {
+	userID := uuid.New()
+	api := New(&fakeStore{}, Options{InternalToken: "secret"})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/me/entries", strings.NewReader(`{"delta_minor":100}`))
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	request.Header.Set(idempotencyHeader, "entry-1")
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", response.Code)
+	}
+}
+
+func TestClaimGrantCreditsConfiguredGrantOnce(t *testing.T) {
+	userID := uuid.New()
+	fake := &fakeStore{}
+	api := New(fake, Options{
+		InternalToken: "secret",
+		Grants: map[string]int64{
+			"starter_supply": 16000,
+		},
+	})
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/v1/me/grants/starter_supply/claim", nil)
+		request.Header.Set(internalTokenHeader, "secret")
+		request.Header.Set(userIDHeader, userID.String())
+		response := httptest.NewRecorder()
+
+		api.Handler().ServeHTTP(response, request)
+
+		expectedStatus := http.StatusCreated
+		if attempt == 2 {
+			expectedStatus = http.StatusOK
+		}
+		if response.Code != expectedStatus {
+			t.Fatalf("attempt %d: expected %d, got %d", attempt, expectedStatus, response.Code)
+		}
+
+		var body claimGrantResponse
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			t.Fatalf("attempt %d: decode response: %v", attempt, err)
+		}
+		if body.GrantID != "starter_supply" {
+			t.Fatalf("attempt %d: expected starter_supply, got %s", attempt, body.GrantID)
+		}
+		if body.Account.BalanceMinor != 16000 {
+			t.Fatalf("attempt %d: expected balance 16000, got %d", attempt, body.Account.BalanceMinor)
+		}
+		if body.Entry.IdempotencyKey != "grant:starter_supply" {
+			t.Fatalf("attempt %d: expected grant idempotency key, got %s", attempt, body.Entry.IdempotencyKey)
+		}
+		if body.AlreadyClaimed != (attempt == 2) {
+			t.Fatalf("attempt %d: unexpected already_claimed=%v", attempt, body.AlreadyClaimed)
+		}
+	}
+}
+
+func TestClaimGrantRejectsUnknownGrant(t *testing.T) {
+	userID := uuid.New()
+	api := New(&fakeStore{}, Options{
+		InternalToken: "secret",
+		Grants: map[string]int64{
+			"starter_supply": 16000,
+		},
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/me/grants/unknown/claim", nil)
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", response.Code)
 	}
 }
 
