@@ -22,6 +22,12 @@ type createEntryRequest struct {
 	Metadata   json.RawMessage `json:"metadata"`
 }
 
+type createCreditRequest struct {
+	AmountMinor *int64          `json:"amount_minor"`
+	Reason      string          `json:"reason"`
+	Metadata    json.RawMessage `json:"metadata"`
+}
+
 type accountResponse struct {
 	UserID       string    `json:"user_id"`
 	BalanceMinor int64     `json:"balance_minor"`
@@ -52,12 +58,7 @@ type createEntryResponse struct {
 	IdempotencyReused bool                `json:"idempotency_reused"`
 }
 
-type claimGrantResponse struct {
-	GrantID        string              `json:"grant_id"`
-	Account        accountResponse     `json:"account"`
-	Entry          ledgerEntryResponse `json:"entry"`
-	AlreadyClaimed bool                `json:"already_claimed"`
-}
+type createCreditResponse createEntryResponse
 
 func accountResponseFromStore(account store.Account) accountResponse {
 	return accountResponse{

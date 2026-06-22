@@ -27,7 +27,6 @@ INTERNAL_TOKEN=...
 ```text
 PORT=8080
 MAX_LEDGER_LIMIT=100
-ASSET_GRANTS=starter_supply=16000
 ALLOW_DIRECT_ENTRIES=false
 ```
 
@@ -86,16 +85,26 @@ X-Internal-Token: <网关内部调用密钥>
 X-User-Id: <网关校验后的用户 UUID>
 ```
 
-领取服务端配置的资产补给：
+新增当前用户资产：
 
 ```http
-POST /v1/me/grants/starter_supply/claim
+POST /v1/me/credits
 X-Internal-Token: <网关内部调用密钥>
 X-User-Id: <网关校验后的用户 UUID>
+Idempotency-Key: <本次新增资产操作的唯一幂等键>
+Content-Type: application/json
+
+{
+  "amount_minor": 16000,
+  "reason": "manual_credit",
+  "metadata": {
+    "source": "frontend"
+  }
+}
 ```
 
-`ASSET_GRANTS` 使用逗号分隔的 `grant_id=delta_minor` 列表。服务会用
-`grant:<grant_id>` 作为幂等键，因此同一个用户同一个补给只能领取一次。
+`amount_minor` 必须大于 `0`。服务会把 `Idempotency-Key` 保存为
+`credit:<Idempotency-Key>`，因此前端重试同一次请求不会重复加资产。
 
 `POST /v1/me/entries` 是底层账务流水写入口，默认不注册路由。只有显式设置
 `ALLOW_DIRECT_ENTRIES=true` 时才会开放，普通前端不要使用它。

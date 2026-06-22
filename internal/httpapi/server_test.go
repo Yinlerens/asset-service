@@ -152,20 +152,32 @@ func TestCreateEntryIsDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestClaimGrantCreditsConfiguredGrantOnce(t *testing.T) {
+func TestCreateCreditRequiresIdempotencyKey(t *testing.T) {
+	userID := uuid.New()
+	api := New(&fakeStore{}, Options{InternalToken: "secret"})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/me/credits", strings.NewReader(`{"amount_minor":100}`))
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.Code)
+	}
+}
+
+func TestCreateCreditCreditsCurrentUser(t *testing.T) {
 	userID := uuid.New()
 	fake := &fakeStore{}
-	api := New(fake, Options{
-		InternalToken: "secret",
-		Grants: map[string]int64{
-			"starter_supply": 16000,
-		},
-	})
+	api := New(fake, Options{InternalToken: "secret"})
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		request := httptest.NewRequest(http.MethodPost, "/v1/me/grants/starter_supply/claim", nil)
+		request := httptest.NewRequest(http.MethodPost, "/v1/me/credits", strings.NewReader(`{"amount_minor":16000,"reason":"manual_credit","metadata":{"source":"frontend"}}`))
 		request.Header.Set(internalTokenHeader, "secret")
 		request.Header.Set(userIDHeader, userID.String())
+		request.Header.Set(idempotencyHeader, "credit-1")
 		response := httptest.NewRecorder()
 
 		api.Handler().ServeHTTP(response, request)
@@ -178,43 +190,41 @@ func TestClaimGrantCreditsConfiguredGrantOnce(t *testing.T) {
 			t.Fatalf("attempt %d: expected %d, got %d", attempt, expectedStatus, response.Code)
 		}
 
-		var body claimGrantResponse
+		var body createCreditResponse
 		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 			t.Fatalf("attempt %d: decode response: %v", attempt, err)
-		}
-		if body.GrantID != "starter_supply" {
-			t.Fatalf("attempt %d: expected starter_supply, got %s", attempt, body.GrantID)
 		}
 		if body.Account.BalanceMinor != 16000 {
 			t.Fatalf("attempt %d: expected balance 16000, got %d", attempt, body.Account.BalanceMinor)
 		}
-		if body.Entry.IdempotencyKey != "grant:starter_supply" {
-			t.Fatalf("attempt %d: expected grant idempotency key, got %s", attempt, body.Entry.IdempotencyKey)
+		if body.Entry.IdempotencyKey != "credit:credit-1" {
+			t.Fatalf("attempt %d: expected credit idempotency key, got %s", attempt, body.Entry.IdempotencyKey)
 		}
-		if body.AlreadyClaimed != (attempt == 2) {
-			t.Fatalf("attempt %d: unexpected already_claimed=%v", attempt, body.AlreadyClaimed)
+		if body.Entry.Reason != "manual_credit" {
+			t.Fatalf("attempt %d: expected manual_credit reason, got %s", attempt, body.Entry.Reason)
+		}
+		if body.IdempotencyReused != (attempt == 2) {
+			t.Fatalf("attempt %d: unexpected idempotency_reused=%v", attempt, body.IdempotencyReused)
 		}
 	}
 }
 
-func TestClaimGrantRejectsUnknownGrant(t *testing.T) {
-	userID := uuid.New()
-	api := New(&fakeStore{}, Options{
-		InternalToken: "secret",
-		Grants: map[string]int64{
-			"starter_supply": 16000,
-		},
-	})
+func TestCreateCreditRejectsNonPositiveAmount(t *testing.T) {
+	for _, payload := range []string{`{"amount_minor":0}`, `{"amount_minor":-100}`} {
+		userID := uuid.New()
+		api := New(&fakeStore{}, Options{InternalToken: "secret"})
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/me/grants/unknown/claim", nil)
-	request.Header.Set(internalTokenHeader, "secret")
-	request.Header.Set(userIDHeader, userID.String())
-	response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/me/credits", strings.NewReader(payload))
+		request.Header.Set(internalTokenHeader, "secret")
+		request.Header.Set(userIDHeader, userID.String())
+		request.Header.Set(idempotencyHeader, "credit-1")
+		response := httptest.NewRecorder()
 
-	api.Handler().ServeHTTP(response, request)
+		api.Handler().ServeHTTP(response, request)
 
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", response.Code)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("payload %s: expected 400, got %d", payload, response.Code)
+		}
 	}
 }
 

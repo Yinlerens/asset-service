@@ -40,7 +40,6 @@ func run() error {
 	api := httpapi.New(dataStore, httpapi.Options{
 		InternalToken:      cfg.InternalToken,
 		MaxLedgerLimit:     cfg.MaxLedgerLimit,
-		Grants:             cfg.Grants,
 		AllowDirectEntries: cfg.AllowDirectEntries,
 	})
 

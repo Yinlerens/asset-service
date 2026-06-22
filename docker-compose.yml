@@ -40,7 +40,6 @@ services:
       DATABASE_URL: postgres://asset:asset@db:5432/asset?sslmode=disable
       INTERNAL_TOKEN: local-dev-token
       MAX_LEDGER_LIMIT: "100"
-      ASSET_GRANTS: starter_supply=16000
     ports:
       - "127.0.0.1:8081:8080"
 

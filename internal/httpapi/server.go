@@ -34,7 +34,6 @@ type Store interface {
 type Options struct {
 	InternalToken      string
 	MaxLedgerLimit     int
-	Grants             map[string]int64
 	AllowDirectEntries bool
 }
 
@@ -42,7 +41,6 @@ type Server struct {
 	store              Store
 	internalToken      string
 	maxLedgerLimit     int
-	grants             map[string]int64
 	allowDirectEntries bool
 }
 
@@ -56,7 +54,6 @@ func New(store Store, opts Options) *Server {
 		store:              store,
 		internalToken:      opts.InternalToken,
 		maxLedgerLimit:     maxLedgerLimit,
-		grants:             normalizeGrants(opts.Grants),
 		allowDirectEntries: opts.AllowDirectEntries,
 	}
 }
@@ -67,7 +64,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.Handle("GET /v1/me/account", s.withGatewayAuth(http.HandlerFunc(s.handleGetAccount)))
 	mux.Handle("GET /v1/me/ledger", s.withGatewayAuth(http.HandlerFunc(s.handleListLedger)))
-	mux.Handle("POST /v1/me/grants/{grant_id}/claim", s.withGatewayAuth(http.HandlerFunc(s.handleClaimGrant)))
+	mux.Handle("POST /v1/me/credits", s.withGatewayAuth(http.HandlerFunc(s.handleCreateCredit)))
 	if s.allowDirectEntries {
 		mux.Handle("POST /v1/me/entries", s.withGatewayAuth(http.HandlerFunc(s.handleCreateEntry)))
 	}
@@ -143,13 +140,8 @@ func (s *Server) handleListLedger(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	userID := mustUserID(r.Context())
 
-	idempotencyKey := strings.TrimSpace(r.Header.Get(idempotencyHeader))
-	if idempotencyKey == "" {
-		writeError(w, http.StatusBadRequest, "missing_idempotency_key", "Idempotency-Key header is required")
-		return
-	}
-	if len(idempotencyKey) > 128 {
-		writeError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must be 128 characters or fewer")
+	idempotencyKey, ok := readIdempotencyKey(w, r)
+	if !ok {
 		return
 	}
 
@@ -203,38 +195,54 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleClaimGrant(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCreateCredit(w http.ResponseWriter, r *http.Request) {
 	userID := mustUserID(r.Context())
-	grantID := strings.TrimSpace(r.PathValue("grant_id"))
-	deltaMinor, ok := s.grants[grantID]
+
+	idempotencyKey, ok := readIdempotencyKey(w, r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "grant_not_found", "grant was not found")
 		return
 	}
 
-	metadata, err := json.Marshal(map[string]string{
-		"grant_id": grantID,
-		"source":   "asset_grant",
-	})
+	var request createCreditRequest
+	if err := decodeRequestJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	if request.AmountMinor == nil || *request.AmountMinor <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_amount", "amount_minor is required and must be greater than zero")
+		return
+	}
+
+	reason := strings.TrimSpace(request.Reason)
+	if reason == "" {
+		reason = "asset_credit"
+	}
+	if len(reason) > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_reason", "reason must be 200 characters or fewer")
+		return
+	}
+
+	metadata, err := normalizeMetadata(request.Metadata)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "grant_unavailable", "grant could not be claimed")
+		writeError(w, http.StatusBadRequest, "invalid_metadata", err.Error())
 		return
 	}
 
 	entry, account, reused, err := s.store.CreateEntry(r.Context(), userID, store.CreateEntryInput{
-		IdempotencyKey: "grant:" + grantID,
-		DeltaMinor:     deltaMinor,
-		Reason:         "asset_grant:" + grantID,
+		IdempotencyKey: "credit:" + idempotencyKey,
+		DeltaMinor:     *request.AmountMinor,
+		Reason:         reason,
 		Metadata:       metadata,
 	})
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrIdempotencyConflict):
-			writeError(w, http.StatusConflict, "grant_conflict", "grant claim conflicts with an existing ledger entry")
+			writeError(w, http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used with a different request")
 		case errors.Is(err, store.ErrBalanceOverflow):
 			writeError(w, http.StatusConflict, "balance_overflow", "balance is outside the supported range")
 		default:
-			writeError(w, http.StatusInternalServerError, "grant_unavailable", "grant could not be claimed")
+			writeError(w, http.StatusInternalServerError, "credit_unavailable", "asset credit could not be created")
 		}
 		return
 	}
@@ -244,11 +252,10 @@ func (s *Server) handleClaimGrant(w http.ResponseWriter, r *http.Request) {
 		statusCode = http.StatusOK
 	}
 
-	writeJSON(w, statusCode, claimGrantResponse{
-		GrantID:        grantID,
-		Account:        accountResponseFromStore(account),
-		Entry:          ledgerEntryResponseFromStore(entry),
-		AlreadyClaimed: reused,
+	writeJSON(w, statusCode, createCreditResponse{
+		Account:           accountResponseFromStore(account),
+		Entry:             ledgerEntryResponseFromStore(entry),
+		IdempotencyReused: reused,
 	})
 }
 
@@ -274,16 +281,18 @@ func constantTimeEqual(left string, right string) bool {
 	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }
 
-func normalizeGrants(grants map[string]int64) map[string]int64 {
-	normalized := make(map[string]int64, len(grants))
-	for id, delta := range grants {
-		id = strings.TrimSpace(id)
-		if id == "" || delta <= 0 {
-			continue
-		}
-		normalized[id] = delta
+func readIdempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	idempotencyKey := strings.TrimSpace(r.Header.Get(idempotencyHeader))
+	if idempotencyKey == "" {
+		writeError(w, http.StatusBadRequest, "missing_idempotency_key", "Idempotency-Key header is required")
+		return "", false
 	}
-	return normalized
+	if len(idempotencyKey) > 128 {
+		writeError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must be 128 characters or fewer")
+		return "", false
+	}
+
+	return idempotencyKey, true
 }
 
 type userIDContextKey struct{}
