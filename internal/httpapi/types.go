@@ -28,6 +28,8 @@ type createCreditRequest struct {
 	Metadata    json.RawMessage `json:"metadata"`
 }
 
+type createSpendRequest createCreditRequest
+
 type accountResponse struct {
 	UserID       string    `json:"user_id"`
 	BalanceMinor int64     `json:"balance_minor"`
@@ -59,6 +61,8 @@ type createEntryResponse struct {
 }
 
 type createCreditResponse createEntryResponse
+
+type createSpendResponse createEntryResponse
 
 func accountResponseFromStore(account store.Account) accountResponse {
 	return accountResponse{

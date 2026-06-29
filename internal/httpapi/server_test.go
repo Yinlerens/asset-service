@@ -39,6 +39,10 @@ func (f *fakeStore) CreateEntry(ctx context.Context, userID uuid.UUID, input sto
 		}
 	}
 
+	if f.account.BalanceMinor+input.DeltaMinor < 0 {
+		return store.LedgerEntry{}, store.Account{}, false, store.ErrInsufficientFunds
+	}
+
 	entry := store.LedgerEntry{
 		ID:                 uuid.New(),
 		UserID:             userID,
@@ -218,6 +222,88 @@ func TestCreateCreditRejectsNonPositiveAmount(t *testing.T) {
 		request.Header.Set(internalTokenHeader, "secret")
 		request.Header.Set(userIDHeader, userID.String())
 		request.Header.Set(idempotencyHeader, "credit-1")
+		response := httptest.NewRecorder()
+
+		api.Handler().ServeHTTP(response, request)
+
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("payload %s: expected 400, got %d", payload, response.Code)
+		}
+	}
+}
+
+func TestCreateSpendSpendsCurrentUser(t *testing.T) {
+	userID := uuid.New()
+	fake := &fakeStore{
+		account: store.Account{BalanceMinor: 3200},
+	}
+	api := New(fake, Options{InternalToken: "secret"})
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/v1/me/spends", strings.NewReader(`{"amount_minor":1600,"reason":"gacha_pull","metadata":{"banner_id":"limited-character-001","count":10}}`))
+		request.Header.Set(internalTokenHeader, "secret")
+		request.Header.Set(userIDHeader, userID.String())
+		request.Header.Set(idempotencyHeader, "pull-1")
+		response := httptest.NewRecorder()
+
+		api.Handler().ServeHTTP(response, request)
+
+		expectedStatus := http.StatusCreated
+		if attempt == 2 {
+			expectedStatus = http.StatusOK
+		}
+		if response.Code != expectedStatus {
+			t.Fatalf("attempt %d: expected %d, got %d", attempt, expectedStatus, response.Code)
+		}
+
+		var body createSpendResponse
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			t.Fatalf("attempt %d: decode response: %v", attempt, err)
+		}
+		if body.Account.BalanceMinor != 1600 {
+			t.Fatalf("attempt %d: expected balance 1600, got %d", attempt, body.Account.BalanceMinor)
+		}
+		if body.Entry.IdempotencyKey != "spend:pull-1" {
+			t.Fatalf("attempt %d: expected spend idempotency key, got %s", attempt, body.Entry.IdempotencyKey)
+		}
+		if body.Entry.DeltaMinor != -1600 {
+			t.Fatalf("attempt %d: expected delta -1600, got %d", attempt, body.Entry.DeltaMinor)
+		}
+		if body.Entry.Reason != "gacha_pull" {
+			t.Fatalf("attempt %d: expected gacha_pull reason, got %s", attempt, body.Entry.Reason)
+		}
+		if body.IdempotencyReused != (attempt == 2) {
+			t.Fatalf("attempt %d: unexpected idempotency_reused=%v", attempt, body.IdempotencyReused)
+		}
+	}
+}
+
+func TestCreateSpendRejectsInsufficientFunds(t *testing.T) {
+	userID := uuid.New()
+	api := New(&fakeStore{account: store.Account{BalanceMinor: 100}}, Options{InternalToken: "secret"})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/me/spends", strings.NewReader(`{"amount_minor":1600}`))
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	request.Header.Set(idempotencyHeader, "pull-1")
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.Code)
+	}
+}
+
+func TestCreateSpendRejectsNonPositiveAmount(t *testing.T) {
+	for _, payload := range []string{`{"amount_minor":0}`, `{"amount_minor":-100}`} {
+		userID := uuid.New()
+		api := New(&fakeStore{}, Options{InternalToken: "secret"})
+
+		request := httptest.NewRequest(http.MethodPost, "/v1/me/spends", strings.NewReader(payload))
+		request.Header.Set(internalTokenHeader, "secret")
+		request.Header.Set(userIDHeader, userID.String())
+		request.Header.Set(idempotencyHeader, "spend-1")
 		response := httptest.NewRecorder()
 
 		api.Handler().ServeHTTP(response, request)

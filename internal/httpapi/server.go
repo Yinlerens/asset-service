@@ -65,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/me/account", s.withGatewayAuth(http.HandlerFunc(s.handleGetAccount)))
 	mux.Handle("GET /v1/me/ledger", s.withGatewayAuth(http.HandlerFunc(s.handleListLedger)))
 	mux.Handle("POST /v1/me/credits", s.withGatewayAuth(http.HandlerFunc(s.handleCreateCredit)))
+	mux.Handle("POST /v1/me/spends", s.withGatewayAuth(http.HandlerFunc(s.handleCreateSpend)))
 	if s.allowDirectEntries {
 		mux.Handle("POST /v1/me/entries", s.withGatewayAuth(http.HandlerFunc(s.handleCreateEntry)))
 	}
@@ -253,6 +254,72 @@ func (s *Server) handleCreateCredit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, statusCode, createCreditResponse{
+		Account:           accountResponseFromStore(account),
+		Entry:             ledgerEntryResponseFromStore(entry),
+		IdempotencyReused: reused,
+	})
+}
+
+func (s *Server) handleCreateSpend(w http.ResponseWriter, r *http.Request) {
+	userID := mustUserID(r.Context())
+
+	idempotencyKey, ok := readIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+
+	var request createSpendRequest
+	if err := decodeRequestJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	if request.AmountMinor == nil || *request.AmountMinor <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_amount", "amount_minor is required and must be greater than zero")
+		return
+	}
+
+	reason := strings.TrimSpace(request.Reason)
+	if reason == "" {
+		reason = "asset_spend"
+	}
+	if len(reason) > 200 {
+		writeError(w, http.StatusBadRequest, "invalid_reason", "reason must be 200 characters or fewer")
+		return
+	}
+
+	metadata, err := normalizeMetadata(request.Metadata)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_metadata", err.Error())
+		return
+	}
+
+	entry, account, reused, err := s.store.CreateEntry(r.Context(), userID, store.CreateEntryInput{
+		IdempotencyKey: "spend:" + idempotencyKey,
+		DeltaMinor:     -*request.AmountMinor,
+		Reason:         reason,
+		Metadata:       metadata,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrInsufficientFunds):
+			writeError(w, http.StatusConflict, "insufficient_funds", "balance cannot go below zero")
+		case errors.Is(err, store.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used with a different request")
+		case errors.Is(err, store.ErrBalanceOverflow):
+			writeError(w, http.StatusConflict, "balance_overflow", "balance is outside the supported range")
+		default:
+			writeError(w, http.StatusInternalServerError, "spend_unavailable", "asset spend could not be created")
+		}
+		return
+	}
+
+	statusCode := http.StatusCreated
+	if reused {
+		statusCode = http.StatusOK
+	}
+
+	writeJSON(w, statusCode, createSpendResponse{
 		Account:           accountResponseFromStore(account),
 		Entry:             ledgerEntryResponseFromStore(entry),
 		IdempotencyReused: reused,
