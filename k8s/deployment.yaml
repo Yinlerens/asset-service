@@ -30,7 +30,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: asset-service
-          image: ghcr.io/yinlerens/asset-service@sha256:79c07e66299d82f4ee7a2e73e1d8611cf1e386c56b35e2e1d60443c603cc98ee
+          image: ghcr.io/yinlerens/asset-service@sha256:9b250f61c4423289bee0f0469ac55abb39cdea5bc77f14f18f7fc6ca254b8e46
           imagePullPolicy: Always
           ports:
             - name: http
