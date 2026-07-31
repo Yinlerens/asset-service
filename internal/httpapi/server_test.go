@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,6 +60,51 @@ func (f *fakeStore) CreateEntry(ctx context.Context, userID uuid.UUID, input sto
 	f.account.BalanceMinor = entry.BalanceAfterMinor
 	f.entries = append(f.entries, entry)
 	return entry, f.account, false, nil
+}
+
+func TestProbeEndpointsDoNotEmitAccessLogs(t *testing.T) {
+	logs := captureDefaultLogs(t)
+	handler := New(&fakeStore{}, Options{InternalToken: "secret"}).Handler()
+
+	for _, path := range []string{"/health", "/ready"} {
+		logs.Reset()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+
+		handler.ServeHTTP(response, request)
+
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", path, response.Code)
+		}
+		if strings.Contains(logs.String(), `"msg":"http request"`) {
+			t.Fatalf("%s: expected no access log, got %s", path, logs.String())
+		}
+	}
+}
+
+func TestBusinessEndpointStillEmitsAccessLog(t *testing.T) {
+	logs := captureDefaultLogs(t)
+	api := New(&fakeStore{}, Options{InternalToken: "secret"})
+	request := httptest.NewRequest(http.MethodGet, "/v1/me/account", nil)
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if !strings.Contains(logs.String(), `"msg":"http request"`) {
+		t.Fatalf("expected business access log, got %s", logs.String())
+	}
+}
+
+func captureDefaultLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+	return &output
 }
 
 func TestGetAccountRequiresGatewayAuth(t *testing.T) {
