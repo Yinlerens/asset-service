@@ -1,0 +1,31 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: asset-service-ingress
+  namespace: asset-service
+  labels:
+    app.kubernetes.io/name: asset-service
+    app.kubernetes.io/part-of: asset-service
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: asset-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway-service
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway-service
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: gacha-engine-service
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gacha-engine-service
+      ports:
+        - protocol: TCP
+          port: 8080

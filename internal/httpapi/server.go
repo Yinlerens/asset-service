@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,6 +24,7 @@ const (
 	internalTokenHeader = "X-Internal-Token"
 	userIDHeader        = "X-User-Id"
 	idempotencyHeader   = "Idempotency-Key"
+	requestIDHeader     = "X-Request-Id"
 )
 
 type Store interface {
@@ -69,7 +72,7 @@ func (s *Server) Handler() http.Handler {
 	if s.allowDirectEntries {
 		mux.Handle("POST /v1/me/entries", s.withGatewayAuth(http.HandlerFunc(s.handleCreateEntry)))
 	}
-	return mux
+	return s.accessLog(mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -346,6 +349,77 @@ func (s *Server) withGatewayAuth(next http.Handler) http.Handler {
 
 func constantTimeEqual(left string, right string) bool {
 	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
+}
+
+func requestIDFromHeader(header http.Header) string {
+	value := strings.TrimSpace(header.Get(requestIDHeader))
+	if parsed, err := uuid.Parse(value); err == nil {
+		return parsed.String()
+	}
+	return uuid.NewString()
+}
+
+func (s *Server) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		requestID := requestIDFromHeader(r.Header)
+		w.Header().Set(requestIDHeader, requestID)
+
+		response := &accessLogResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(response, r)
+
+		status := response.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		slog.Info(
+			"http request",
+			"request_id", requestID,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", status,
+			"duration_ms", time.Since(started).Milliseconds(),
+			"bytes", response.bytes,
+			"remote_ip", remoteIP(r.RemoteAddr),
+		)
+	})
+}
+
+type accessLogResponseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (w *accessLogResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *accessLogResponseWriter) Write(payload []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	written, err := w.ResponseWriter.Write(payload)
+	w.bytes += int64(written)
+	return written, err
+}
+
+func (w *accessLogResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func remoteIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 func readIdempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
