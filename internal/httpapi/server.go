@@ -367,6 +367,9 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 
 		response := &accessLogResponseWriter{ResponseWriter: w}
 		next.ServeHTTP(response, r)
+		if isProbePath(r.URL.Path) {
+			return
+		}
 
 		status := response.status
 		if status == 0 {
@@ -384,6 +387,10 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			"remote_ip", remoteIP(r.RemoteAddr),
 		)
 	})
+}
+
+func isProbePath(path string) bool {
+	return path == "/health" || path == "/ready"
 }
 
 type accessLogResponseWriter struct {
