@@ -18,6 +18,7 @@ var (
 	ErrInsufficientFunds   = errors.New("insufficient funds")
 	ErrIdempotencyConflict = errors.New("idempotency conflict")
 	ErrBalanceOverflow     = errors.New("balance overflow")
+	ErrAccountNotFound     = errors.New("account not found")
 )
 
 type Store struct {
@@ -66,6 +67,21 @@ func (s *Store) EnsureAccount(ctx context.Context, userID uuid.UUID) (Account, e
 		return Account{}, fmt.Errorf("commit transaction: %w", err)
 	}
 
+	return account, nil
+}
+
+func (s *Store) GetAccount(ctx context.Context, userID uuid.UUID) (Account, error) {
+	account, err := scanAccount(s.pool.QueryRow(ctx, `
+		select user_id, balance_minor, created_at, updated_at
+		from asset.accounts
+		where user_id = $1
+	`, userID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrAccountNotFound
+	}
+	if err != nil {
+		return Account{}, err
+	}
 	return account, nil
 }
 

@@ -30,6 +30,7 @@ const (
 type Store interface {
 	Ping(ctx context.Context) error
 	EnsureAccount(ctx context.Context, userID uuid.UUID) (store.Account, error)
+	GetAccount(ctx context.Context, userID uuid.UUID) (store.Account, error)
 	ListLedgerEntries(ctx context.Context, userID uuid.UUID, cursor *store.LedgerCursor, limit int) ([]store.LedgerEntry, error)
 	CreateEntry(ctx context.Context, userID uuid.UUID, input store.CreateEntryInput) (store.LedgerEntry, store.Account, bool, error)
 }
@@ -94,13 +95,40 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	userID := mustUserID(r.Context())
 
-	account, err := s.store.EnsureAccount(r.Context(), userID)
+	create, err := parseCreateAccount(r)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_create", err.Error())
+		return
+	}
+
+	var account store.Account
+	if create {
+		account, err = s.store.EnsureAccount(r.Context(), userID)
+	} else {
+		account, err = s.store.GetAccount(r.Context(), userID)
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrAccountNotFound) {
+			writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "account_unavailable", "account is unavailable")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, accountResponseFromStore(account))
+}
+
+func parseCreateAccount(r *http.Request) (bool, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("create"))
+	if raw == "" {
+		return true, nil
+	}
+	create, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("create must be true or false")
+	}
+	return create, nil
 }
 
 func (s *Server) handleListLedger(w http.ResponseWriter, r *http.Request) {

@@ -16,8 +16,8 @@ import (
 )
 
 type fakeStore struct {
-	account         store.Account
-	entries         []store.LedgerEntry
+	account          store.Account
+	entries          []store.LedgerEntry
 	ensureAccountErr error
 	getAccountErr    error
 	ensureCalls      int
