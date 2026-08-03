@@ -16,8 +16,12 @@ import (
 )
 
 type fakeStore struct {
-	account store.Account
-	entries []store.LedgerEntry
+	account         store.Account
+	entries         []store.LedgerEntry
+	ensureAccountErr error
+	getAccountErr    error
+	ensureCalls      int
+	getCalls         int
 }
 
 func (f *fakeStore) Ping(ctx context.Context) error {
@@ -25,6 +29,19 @@ func (f *fakeStore) Ping(ctx context.Context) error {
 }
 
 func (f *fakeStore) EnsureAccount(ctx context.Context, userID uuid.UUID) (store.Account, error) {
+	f.ensureCalls++
+	if f.ensureAccountErr != nil {
+		return store.Account{}, f.ensureAccountErr
+	}
+	f.account.UserID = userID
+	return f.account, nil
+}
+
+func (f *fakeStore) GetAccount(ctx context.Context, userID uuid.UUID) (store.Account, error) {
+	f.getCalls++
+	if f.getAccountErr != nil {
+		return store.Account{}, f.getAccountErr
+	}
 	f.account.UserID = userID
 	return f.account, nil
 }
@@ -150,6 +167,57 @@ func TestGetAccountEnsuresAccountForGatewayUser(t *testing.T) {
 	}
 	if body.BalanceMinor != 2500 {
 		t.Fatalf("expected balance 2500, got %d", body.BalanceMinor)
+	}
+}
+
+func TestGetAccountWithoutCreateReadsExistingAccountWithoutMutation(t *testing.T) {
+	userID := uuid.New()
+	apiStore := &fakeStore{account: store.Account{BalanceMinor: 4200}}
+	api := New(apiStore, Options{InternalToken: "secret"})
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/me/account?create=false", nil)
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if apiStore.ensureCalls != 0 {
+		t.Fatalf("expected read-only lookup not to ensure an account, got %d calls", apiStore.ensureCalls)
+	}
+	if apiStore.getCalls != 1 {
+		t.Fatalf("expected one read-only account lookup, got %d", apiStore.getCalls)
+	}
+}
+
+func TestGetAccountWithoutCreateReturnsNotFoundWithoutMutation(t *testing.T) {
+	userID := uuid.New()
+	apiStore := &fakeStore{getAccountErr: store.ErrAccountNotFound}
+	api := New(apiStore, Options{InternalToken: "secret"})
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/me/account?create=false", nil)
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
+	}
+	if apiStore.ensureCalls != 0 {
+		t.Fatalf("expected missing account lookup not to create an account, got %d ensure calls", apiStore.ensureCalls)
+	}
+
+	var body errorResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error.Code != "account_not_found" {
+		t.Fatalf("expected account_not_found, got %s", body.Error.Code)
 	}
 }
 
