@@ -50,6 +50,15 @@ func (f *fakeStore) ListLedgerEntries(ctx context.Context, userID uuid.UUID, cur
 	return f.entries, nil
 }
 
+func (f *fakeStore) GetLedgerEntryByIdempotencyKey(ctx context.Context, userID uuid.UUID, idempotencyKey string) (store.LedgerEntry, error) {
+	for _, entry := range f.entries {
+		if entry.UserID == userID && entry.IdempotencyKey == idempotencyKey {
+			return entry, nil
+		}
+	}
+	return store.LedgerEntry{}, store.ErrLedgerEntryNotFound
+}
+
 func (f *fakeStore) CreateEntry(ctx context.Context, userID uuid.UUID, input store.CreateEntryInput) (store.LedgerEntry, store.Account, bool, error) {
 	for _, entry := range f.entries {
 		if entry.UserID == userID && entry.IdempotencyKey == input.IdempotencyKey {
@@ -133,6 +142,68 @@ func TestGetAccountRequiresGatewayAuth(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", response.Code)
+	}
+}
+
+func TestGetLedgerEntryFindsExactUserScopedIdempotencyKey(t *testing.T) {
+	userID := uuid.New()
+	otherUserID := uuid.New()
+	expected := store.LedgerEntry{
+		ID:                 uuid.New(),
+		UserID:             userID,
+		IdempotencyKey:     "spend:gacha-pull:event-1",
+		DeltaMinor:         -1600,
+		BalanceBeforeMinor: 3200,
+		BalanceAfterMinor:  1600,
+		Reason:             "gacha_pull",
+		Metadata:           []byte(`{"event_id":"event-1"}`),
+		CreatedAt:          time.Now().UTC(),
+	}
+	api := New(&fakeStore{entries: []store.LedgerEntry{
+		{ID: uuid.New(), UserID: otherUserID, IdempotencyKey: expected.IdempotencyKey},
+		expected,
+	}}, Options{InternalToken: "secret"})
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/me/ledger-entry?idempotency_key=spend%3Agacha-pull%3Aevent-1",
+		nil,
+	)
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var body ledgerEntryResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.ID != expected.ID.String() || body.IdempotencyKey != expected.IdempotencyKey {
+		t.Fatalf("expected exact ledger entry, got %+v", body)
+	}
+}
+
+func TestGetLedgerEntryReturnsNotFoundWithoutCrossUserFallback(t *testing.T) {
+	userID := uuid.New()
+	api := New(&fakeStore{entries: []store.LedgerEntry{{
+		ID: uuid.New(), UserID: uuid.New(), IdempotencyKey: "spend:gacha-pull:event-1",
+	}}}, Options{InternalToken: "secret"})
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/me/ledger-entry?idempotency_key=spend%3Agacha-pull%3Aevent-1",
+		nil,
+	)
+	request.Header.Set(internalTokenHeader, "secret")
+	request.Header.Set(userIDHeader, userID.String())
+	response := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
 	}
 }
 

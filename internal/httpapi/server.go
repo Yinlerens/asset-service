@@ -32,6 +32,7 @@ type Store interface {
 	EnsureAccount(ctx context.Context, userID uuid.UUID) (store.Account, error)
 	GetAccount(ctx context.Context, userID uuid.UUID) (store.Account, error)
 	ListLedgerEntries(ctx context.Context, userID uuid.UUID, cursor *store.LedgerCursor, limit int) ([]store.LedgerEntry, error)
+	GetLedgerEntryByIdempotencyKey(ctx context.Context, userID uuid.UUID, idempotencyKey string) (store.LedgerEntry, error)
 	CreateEntry(ctx context.Context, userID uuid.UUID, input store.CreateEntryInput) (store.LedgerEntry, store.Account, bool, error)
 }
 
@@ -68,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.Handle("GET /v1/me/account", s.withGatewayAuth(http.HandlerFunc(s.handleGetAccount)))
 	mux.Handle("GET /v1/me/ledger", s.withGatewayAuth(http.HandlerFunc(s.handleListLedger)))
+	mux.Handle("GET /v1/me/ledger-entry", s.withGatewayAuth(http.HandlerFunc(s.handleGetLedgerEntry)))
 	mux.Handle("POST /v1/me/credits", s.withGatewayAuth(http.HandlerFunc(s.handleCreateCredit)))
 	mux.Handle("POST /v1/me/spends", s.withGatewayAuth(http.HandlerFunc(s.handleCreateSpend)))
 	if s.allowDirectEntries {
@@ -167,6 +169,27 @@ func (s *Server) handleListLedger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleGetLedgerEntry(w http.ResponseWriter, r *http.Request) {
+	userID := mustUserID(r.Context())
+	idempotencyKey := strings.TrimSpace(r.URL.Query().Get("idempotency_key"))
+	if idempotencyKey == "" || len(idempotencyKey) > 128 {
+		writeError(w, http.StatusBadRequest, "invalid_idempotency_key", "idempotency_key is required and must be 128 characters or fewer")
+		return
+	}
+
+	entry, err := s.store.GetLedgerEntryByIdempotencyKey(r.Context(), userID, idempotencyKey)
+	if err != nil {
+		if errors.Is(err, store.ErrLedgerEntryNotFound) {
+			writeError(w, http.StatusNotFound, "ledger_entry_not_found", "ledger entry was not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "ledger_unavailable", "ledger entry is unavailable")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ledgerEntryResponseFromStore(entry))
 }
 
 func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {

@@ -19,6 +19,7 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency conflict")
 	ErrBalanceOverflow     = errors.New("balance overflow")
 	ErrAccountNotFound     = errors.New("account not found")
+	ErrLedgerEntryNotFound = errors.New("ledger entry not found")
 )
 
 type Store struct {
@@ -129,6 +130,22 @@ func (s *Store) ListLedgerEntries(ctx context.Context, userID uuid.UUID, cursor 
 	}
 
 	return entries, nil
+}
+
+func (s *Store) GetLedgerEntryByIdempotencyKey(ctx context.Context, userID uuid.UUID, idempotencyKey string) (LedgerEntry, error) {
+	entry, err := scanLedgerEntry(s.pool.QueryRow(ctx, `
+		select id, user_id, idempotency_key, delta_minor, balance_before_minor,
+		       balance_after_minor, reason, metadata, created_at
+		from asset.ledger_entries
+		where user_id = $1 and idempotency_key = $2
+	`, userID, idempotencyKey))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LedgerEntry{}, ErrLedgerEntryNotFound
+	}
+	if err != nil {
+		return LedgerEntry{}, err
+	}
+	return entry, nil
 }
 
 func (s *Store) CreateEntry(ctx context.Context, userID uuid.UUID, input CreateEntryInput) (LedgerEntry, Account, bool, error) {
