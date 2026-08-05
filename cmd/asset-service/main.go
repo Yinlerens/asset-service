@@ -13,10 +13,11 @@ import (
 	"github.com/yinlerens/asset-service/internal/config"
 	"github.com/yinlerens/asset-service/internal/httpapi"
 	"github.com/yinlerens/asset-service/internal/store"
+	"github.com/yinlerens/asset-service/internal/telemetry"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.SetDefault(telemetry.NewJSONLogger(os.Stdout))
 
 	if err := run(); err != nil {
 		slog.Error("asset service stopped", "error", err)
@@ -29,6 +30,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	shutdownTelemetry, err := telemetry.Setup(context.Background(), "asset-service")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			slog.Error("telemetry shutdown failed", "error", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -47,7 +60,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.Handler(),
+		Handler:           telemetry.HTTPHandler(api.Handler()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

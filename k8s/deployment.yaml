@@ -41,6 +41,20 @@ spec:
               value: "8080"
             - name: MAX_LEDGER_LIMIT
               value: "100"
+            - name: OTEL_SERVICE_NAME
+              value: asset-service
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.monitoring.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+            - name: OTEL_TRACES_SAMPLER
+              value: parentbased_traceidratio
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "1.0"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: deployment.environment.name=test,k8s.cluster.name=wuwa
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

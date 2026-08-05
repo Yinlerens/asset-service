@@ -18,6 +18,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/yinlerens/asset-service/internal/store"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -415,6 +417,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		started := time.Now()
 		requestID := requestIDFromHeader(r.Header)
 		w.Header().Set(requestIDHeader, requestID)
+		trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("app.request_id", requestID))
 
 		response := &accessLogResponseWriter{ResponseWriter: w}
 		next.ServeHTTP(response, r)
@@ -427,7 +430,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			status = http.StatusOK
 		}
 
-		slog.Info(
+		slog.InfoContext(r.Context(),
 			"http request",
 			"request_id", requestID,
 			"method", r.Method,
